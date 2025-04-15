@@ -10,7 +10,7 @@ core_requirements = [
     "torchvision",
     "diffusers",
     "dgl",
-    "flash_attn",
+#     "flash_attn",
 ]
 
 setup(name='diffuser_actor',
