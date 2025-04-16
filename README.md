@@ -38,10 +38,16 @@ Create a conda environment with the following command:
 # install diffuser
 > pip install diffusers["torch"]
 
+# the above seems to break torch, so install properly:
+mamba install pytorch==2.0.1 torchvision==0.15.2 -c pytorch -c nvidia
+
+# also install 
+pip install wandb shapely
+
 # install dgl (https://www.dgl.ai/pages/start.html)
 >  pip install dgl==1.1.3+cu116 -f https://data.dgl.ai/wheels/cu116/dgl-1.1.3%2Bcu116-cp38-cp38-manylinux1_x86_64.whl
 
-# install flash attention (https://github.com/Dao-AILab/flash-attention#installation-and-features)
+# (optional - not sure if even used by the latest model) install flash attention (https://github.com/Dao-AILab/flash-attention#installation-and-features)
 > pip install packaging
 > pip install ninja
 > pip install flash-attn==2.5.9.post1 --no-build-isolation
