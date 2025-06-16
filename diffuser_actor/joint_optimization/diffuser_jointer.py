@@ -38,13 +38,15 @@ class DiffuserJointer(nn.Module):
                  diffusion_timesteps=100,
                  nhist=3,
                  relative=False,
-                 lang_enhanced=False):
+                 lang_enhanced=False,
+                 num_attn_heads=6):
         super().__init__()
         self._relative = relative
         self.use_instruction = use_instruction
         self.encoder = Encoder(
             backbone=backbone,
             image_size=image_size,
+            num_attn_heads=num_attn_heads,
             embedding_dim=embedding_dim,
             num_sampling_level=1,
             nhist=nhist,
@@ -52,6 +54,7 @@ class DiffuserJointer(nn.Module):
             fps_subsampling_factor=fps_subsampling_factor
         )
         self.prediction_head = DiffusionHead(
+            num_attn_heads=num_attn_heads,
             embedding_dim=embedding_dim,
             use_instruction=use_instruction,
             nhist=nhist,
@@ -78,6 +81,16 @@ class DiffuserJointer(nn.Module):
             "b ncam c h w -> b (ncam h w) c"
         )
         context = pcd_pyramid[0]
+
+        # from utils.meshcat import create_visualizer, visualize_pointcloud
+        # vis = create_visualizer()
+        # points = context[0, :, :3].cpu().numpy()
+        # visualize_pointcloud(
+        #     vis, 'points',
+        #     pc=points,
+        #     size=0.01
+        # )
+        # import IPython; IPython.embed()
 
         # Encode instruction (B, 53, F)
         instr_feats = None
@@ -205,7 +218,6 @@ class DiffuserJointer(nn.Module):
             fixed_inputs
         )
 
-        
         # unnormalize position
         trajectory[:, :, :7] = self.unnormalize_joint_pos(trajectory[:, :, :7])
         
