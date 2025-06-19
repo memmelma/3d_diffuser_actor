@@ -3,6 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import einops
 from diffusers.schedulers.scheduling_ddpm import DDPMScheduler
+import numpy as np
 
 from diffuser_actor.utils.layers import (
     FFWRelativeSelfAttentionModule,
@@ -15,14 +16,80 @@ from diffuser_actor.utils.position_encodings import (
     RotaryPositionEncoding3D,
     SinusoidalPosEmb
 )
-# from diffuser_actor.utils.utils import (
-#     compute_rotation_matrix_from_ortho6d,
-#     get_ortho6d_from_rotation_matrix,
-#     normalise_quat,
-#     matrix_to_quaternion,
-#     quaternion_to_matrix
-# )
 
+def small_random_rotation_matrix_batch(B, max_angle=3 * torch.pi / 180, device='cpu'):
+    angles = torch.empty(B, 3, device=device).uniform_(-max_angle, max_angle)
+    ax, ay, az = angles[:, 0], angles[:, 1], angles[:, 2]
+
+    cx, cy, cz = torch.cos(angles.T)
+    sx, sy, sz = torch.sin(angles.T)
+
+    zeros = torch.zeros(B, device=device)
+    ones = torch.ones(B, device=device)
+
+    Rx = torch.stack([
+        torch.stack([ones, zeros, zeros], dim=1),
+        torch.stack([zeros, cx, -sx], dim=1),
+        torch.stack([zeros, sx, cx], dim=1)
+    ], dim=1)
+
+    Ry = torch.stack([
+        torch.stack([cy, zeros, sy], dim=1),
+        torch.stack([zeros, ones, zeros], dim=1),
+        torch.stack([-sy, zeros, cy], dim=1)
+    ], dim=1)
+
+    Rz = torch.stack([
+        torch.stack([cz, -sz, zeros], dim=1),
+        torch.stack([sz, cz, zeros], dim=1),
+        torch.stack([zeros, zeros, ones], dim=1)
+    ], dim=1)
+
+    return torch.bmm(Rz, torch.bmm(Ry, Rx))
+
+def augment_pointcloud_batch(pc, translation_range=0.03, rotation_range=3, noise_range=0.01):
+    # pc: [B, T, 3, H, W]
+    B, T, C, H, W = pc.shape
+    assert C == 3, "Expected 3 channels for XYZ data"
+    device = pc.device
+
+    pc = pc.permute(0, 1, 3, 4, 2).contiguous()  # [B, T, H, W, 3]
+    pc_flat = pc.view(B, T, H * W, 3)  # [B, T, N, 3]
+
+    # Translation: [B, 1, 1, 3] (same for all points in B)
+    translation = torch.empty(B, 1, 1, 3, device=device).uniform_(-translation_range, translation_range)
+    pc_flat = pc_flat + translation
+
+    # Rotation: [B, 3, 3]
+    R = small_random_rotation_matrix_batch(B, max_angle=rotation_range * torch.pi / 180, device=device)
+    pc_flat = torch.matmul(pc_flat, R.transpose(1, 2).unsqueeze(1))  # [B, T, N, 3]
+
+    # Gaussian noise: [B, T, N, 3] (per point)
+    noise = torch.randn(B, T, H * W, 3, device=device) * noise_range
+    pc_flat = pc_flat + noise
+
+    pc = pc_flat.view(B, T, H, W, 3).permute(0, 1, 4, 2, 3).contiguous()  # [B, T, 3, H, W]
+    return pc
+
+def augment_rgb_sequence(imgs, brightness=0.2, contrast=0.2, color_jitter=0.1):
+    # imgs: [B, T, C, H, W]
+    device = imgs.device
+    B, T, C, H, W = imgs.shape
+
+    # Brightness: [B, 1, 1, 1]
+    brightness_shift = (torch.rand(B, 1, 1, 1, device=device) * 2 - 1) * brightness
+    imgs = imgs + brightness_shift.unsqueeze(1)  # [B, T, C, H, W]
+
+    # Contrast: [B, 1, 1, 1]
+    contrast_scale = 1 + (torch.rand(B, 1, 1, 1, device=device) * 2 - 1) * contrast
+    mean = imgs.mean(dim=(3, 4), keepdim=True)  # [B, T, C, 1, 1]
+    imgs = (imgs - mean) * contrast_scale.unsqueeze(1) + mean
+
+    # Color jitter: [B, C, 1, 1]
+    jitter = 1 + (torch.rand(B, C, 1, 1, device=device) * 2 - 1) * color_jitter
+    imgs = imgs * jitter.unsqueeze(1)  # [B, T, C, H, W]
+
+    return imgs.clamp(0, 1)
 
 class DiffuserJointer(nn.Module):
 
@@ -35,14 +102,23 @@ class DiffuserJointer(nn.Module):
                  fps_subsampling_factor=5,
                  gripper_loc_bounds=None,
                  joint_loc_bounds=None,
+                 augment_pcd=False,
+                 augment_rgb=False,
                  diffusion_timesteps=100,
                  nhist=3,
+                 loss_weights=[30, 1],
+                 unnormalize_loss=False,
                  relative=False,
+                 traj_relative=False,
                  lang_enhanced=False,
                  num_attn_heads=6):
         super().__init__()
         self._relative = relative
+        self._traj_relative = traj_relative
         self.use_instruction = use_instruction
+        self.augment_pcd = augment_pcd
+        self.augment_rgb = augment_rgb
+        self.unnormalize_loss = unnormalize_loss
         self.encoder = Encoder(
             backbone=backbone,
             image_size=image_size,
@@ -66,14 +142,24 @@ class DiffuserJointer(nn.Module):
             prediction_type="epsilon"
         )
         self.n_steps = diffusion_timesteps
-        self.gripper_loc_bounds = torch.tensor(gripper_loc_bounds)
-        self.joint_loc_bounds = torch.tensor(joint_loc_bounds)
+        self.gripper_loc_bounds = torch.tensor(gripper_loc_bounds) if gripper_loc_bounds is not None else None
+        self.joint_loc_bounds = torch.tensor(joint_loc_bounds) if joint_loc_bounds is not None else None
+        self.loss_weights = loss_weights
 
     def encode_inputs(self, visible_rgb, visible_pcd, instruction,
-                      curr_gripper):
+                      curr_gripper, augment_pcd=True, augment_rgb=True):
+        
+        augmented_pcd = visible_pcd.clone()
+        if augment_pcd:
+            augmented_pcd = augment_pointcloud_batch(augmented_pcd, translation_range=0.03, rotation_range=3, noise_range=0.005)
+
+        augmented_rgb = visible_rgb.clone()
+        if augment_rgb:
+            augmented_rgb = augment_rgb_sequence(augmented_rgb, brightness=0.3, contrast=0.3, color_jitter=0.2)
+        
         # Compute visual features/positional embeddings at different scales
         rgb_feats_pyramid, pcd_pyramid = self.encoder.encode_images(
-            visible_rgb, visible_pcd
+            augmented_rgb, augmented_pcd
         )
         # Keep only low-res scale
         context_feats = einops.rearrange(
@@ -82,15 +168,31 @@ class DiffuserJointer(nn.Module):
         )
         context = pcd_pyramid[0]
 
+
         # from utils.meshcat import create_visualizer, visualize_pointcloud
         # vis = create_visualizer()
-        # points = context[0, :, :3].cpu().numpy()
+        
         # visualize_pointcloud(
-        #     vis, 'points',
-        #     pc=points,
+        #     vis, 'visible_pcd',
+        #     pc=visible_pcd[0,0].permute(1,2,0).reshape(-1, 3).cpu().numpy(),
+        #     color=visible_rgb[0,0].permute(1,2,0).reshape(-1, 3).cpu().numpy() * 255,
         #     size=0.01
         # )
+        # visualize_pointcloud(
+        #     vis, 'augmented_pcd',
+        #     pc=augmented_pcd[0,0].permute(1,2,0).reshape(-1, 3).cpu().numpy(),
+        #     color=augmented_rgb[0,0].permute(1,2,0).reshape(-1, 3).cpu().numpy() * 255,
+        #     size=0.01
+        # )
+        # points = context[0, :, :3].cpu().numpy()
+        # visualize_pointcloud(
+        #     vis, 'compressed_pcd',
+        #     pc=points,
+        #     color=np.array([255, 0, 0]),
+        #     size=0.02
+        # )
         # import IPython; IPython.embed()
+
 
         # Encode instruction (B, 53, F)
         instr_feats = None
@@ -191,15 +293,16 @@ class DiffuserJointer(nn.Module):
         # Normalize all pos
         pcd_obs = pcd_obs.clone()
         curr_gripper = curr_gripper.clone()
-        pcd_obs = torch.permute(self.normalize_pos(
-            torch.permute(pcd_obs, [0, 1, 3, 4, 2])
-        ), [0, 1, 4, 2, 3])
+        if self.gripper_loc_bounds is not None:
+            pcd_obs = torch.permute(self.normalize_pos(
+                torch.permute(pcd_obs, [0, 1, 3, 4, 2])
+            ), [0, 1, 4, 2, 3])
         
-        curr_gripper[..., :7] = self.normalize_joint_pos(curr_gripper[..., :7])
+        curr_gripper = self.normalize_joint_pos(curr_gripper)
 
         # Prepare inputs
         fixed_inputs = self.encode_inputs(
-            rgb_obs, pcd_obs, instruction, curr_gripper
+            rgb_obs, pcd_obs, instruction, curr_gripper, augment_pcd=False, augment_rgb=False
         )
 
         # Condition on start-end pose
@@ -228,13 +331,13 @@ class DiffuserJointer(nn.Module):
         return trajectory
 
     def normalize_joint_pos(self, pos):
-        pos_min = self.joint_loc_bounds[0].float().to(pos.device)
-        pos_max = self.joint_loc_bounds[1].float().to(pos.device)
+        pos_min = self.joint_loc_bounds[0].float().to(pos.device)#[:pos.shape[-1]]
+        pos_max = self.joint_loc_bounds[1].float().to(pos.device)#[:pos.shape[-1]]
         return (pos - pos_min) / (pos_max - pos_min) * 2.0 - 1.0
 
     def unnormalize_joint_pos(self, pos):
-        pos_min = self.joint_loc_bounds[0].float().to(pos.device)
-        pos_max = self.joint_loc_bounds[1].float().to(pos.device)
+        pos_min = self.joint_loc_bounds[0].float().to(pos.device)#[:pos.shape[-1]]
+        pos_max = self.joint_loc_bounds[1].float().to(pos.device)#[:pos.shape[-1]]
         return (pos + 1.0) / 2.0 * (pos_max - pos_min) + pos_min
 
     def normalize_pos(self, pos):
@@ -288,29 +391,40 @@ class DiffuserJointer(nn.Module):
             gt_trajectory = gt_trajectory[..., :7]
         curr_gripper = curr_gripper[..., :7]
 
+        # Relative Trajectory as Action Representation: https://arxiv.org/pdf/2402.10329
+        if self._traj_relative:
+            anchor = curr_gripper
+            gt_trajectory = gt_trajectory - anchor
+
         # gt_trajectory is expected to be in the quaternion format
         if run_inference:
-            return self.compute_trajectory(
+            traj = self.compute_trajectory(
                 trajectory_mask,
                 rgb_obs,
                 pcd_obs,
                 instruction,
                 curr_gripper
             )
+            # Relative Trajectory as Action Representation: https://arxiv.org/pdf/2402.10329
+            if self._traj_relative:
+                traj = traj + anchor
+            return traj
+        
         # Normalize all pos
         gt_trajectory = gt_trajectory.clone()
         pcd_obs = pcd_obs.clone()
         curr_gripper = curr_gripper.clone()
-
+        
         gt_trajectory[:, :, :7] = self.normalize_joint_pos(gt_trajectory[:, :, :7])
-        pcd_obs = torch.permute(self.normalize_pos(
-            torch.permute(pcd_obs, [0, 1, 3, 4, 2])
-        ), [0, 1, 4, 2, 3])
-        curr_gripper[..., :7] = self.normalize_joint_pos(curr_gripper[..., :7])
+        if self.gripper_loc_bounds is not None:
+            pcd_obs = torch.permute(self.normalize_pos(
+                torch.permute(pcd_obs, [0, 1, 3, 4, 2])
+            ), [0, 1, 4, 2, 3])
+        curr_gripper = self.normalize_joint_pos(curr_gripper)
 
         # Prepare inputs
         fixed_inputs = self.encode_inputs(
-            rgb_obs, pcd_obs, instruction, curr_gripper
+            rgb_obs, pcd_obs, instruction, curr_gripper, augment_pcd=self.augment_pcd, augment_rgb=self.augment_rgb
         )
 
         # Condition on start-end pose
@@ -345,11 +459,19 @@ class DiffuserJointer(nn.Module):
         total_loss = 0
         for layer_pred in pred:
             pos = layer_pred[..., :7]
-            pos_loss = F.l1_loss(pos, noise[..., :7], reduction='mean') # * 30
+
+            if self.unnormalize_loss:
+                pos_loss = F.l1_loss(
+                    self.unnormalize_joint_pos(pos),
+                    self.unnormalize_joint_pos(noise[..., :7]),
+                reduction='mean'
+            )
+            else:
+                pos_loss = F.l1_loss(pos, noise[..., :7], reduction='mean')
             loss = pos_loss
             if torch.numel(gt_openess) > 0:
                 openess = layer_pred[..., 7:]
-                openess_loss = F.binary_cross_entropy_with_logits(openess, gt_openess)
+                openess_loss = F.binary_cross_entropy_with_logits(openess, gt_openess) * self.loss_weights[1]
                 loss += openess_loss
             total_loss = total_loss + loss
         return {
