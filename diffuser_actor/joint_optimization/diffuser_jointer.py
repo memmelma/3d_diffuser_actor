@@ -151,7 +151,7 @@ class DiffuserJointer(nn.Module):
         
         augmented_pcd = visible_pcd.clone()
         if augment_pcd:
-            augmented_pcd = augment_pointcloud_batch(augmented_pcd, translation_range=0.03, rotation_range=3, noise_range=0.005)
+            augmented_pcd = augment_pointcloud_batch(augmented_pcd, translation_range=0.03, rotation_range=3, noise_range=0.0)
 
         augmented_rgb = visible_rgb.clone()
         if augment_rgb:
