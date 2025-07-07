@@ -50,7 +50,9 @@ class Encoder(nn.Module):
             # at 1/4 resolution (32x32)
             # Fine RGB features are the 1st layer of the feature pyramid
             # at 1/2 resolution (64x64)
-            self.feature_map_pyramid = ['res2', 'res1', 'res1', 'res1']
+            # self.feature_map_pyramid = ['res2', 'res1', 'res1', 'res1']
+            # HACK: use higher resolution 32 (res1) -> 64 (res2)
+            self.feature_map_pyramid = ['res1', 'res2', 'res1', 'res1']
             self.downscaling_factor_pyramid = [4, 2, 2, 2]
         elif self.image_size == (256, 256):
             # Coarse RGB features are the 3rd layer of the feature pyramid
@@ -196,7 +198,8 @@ class Encoder(nn.Module):
             pcd_i = F.interpolate(
                 pcd,
                 (feat_h, feat_w),
-                mode='bilinear'
+                # mode='bilinear'
+                mode='nearest'
             )
 
             # Merge different cameras for clouds, separate for rgb features
