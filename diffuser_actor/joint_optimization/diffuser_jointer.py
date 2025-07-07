@@ -169,29 +169,37 @@ class DiffuserJointer(nn.Module):
         context = pcd_pyramid[0]
 
 
-        # from utils.meshcat import create_visualizer, visualize_pointcloud
-        # vis = create_visualizer()
-        
-        # visualize_pointcloud(
-        #     vis, 'visible_pcd',
-        #     pc=visible_pcd[0,0].permute(1,2,0).reshape(-1, 3).cpu().numpy(),
-        #     color=visible_rgb[0,0].permute(1,2,0).reshape(-1, 3).cpu().numpy() * 255,
-        #     size=0.01
-        # )
-        # visualize_pointcloud(
-        #     vis, 'augmented_pcd',
-        #     pc=augmented_pcd[0,0].permute(1,2,0).reshape(-1, 3).cpu().numpy(),
-        #     color=augmented_rgb[0,0].permute(1,2,0).reshape(-1, 3).cpu().numpy() * 255,
-        #     size=0.01
-        # )
-        # points = context[0, :, :3].cpu().numpy()
-        # visualize_pointcloud(
-        #     vis, 'compressed_pcd',
-        #     pc=points,
-        #     color=np.array([255, 0, 0]),
-        #     size=0.02
-        # )
-        # import IPython; IPython.embed()
+        if False:
+            from utils.meshcat import create_visualizer, visualize_pointcloud
+            vis = create_visualizer()
+            
+            visualize_pointcloud(
+                vis, 'visible_pcd',
+                pc=visible_pcd[0,0].permute(1,2,0).reshape(-1, 3).cpu().numpy(),
+                color=visible_rgb[0,0].permute(1,2,0).reshape(-1, 3).cpu().numpy() * 255,
+                size=0.01
+            )
+            visualize_pointcloud(
+                vis, 'augmented_pcd',
+                pc=augmented_pcd[0,0].permute(1,2,0).reshape(-1, 3).cpu().numpy(),
+                color=augmented_rgb[0,0].permute(1,2,0).reshape(-1, 3).cpu().numpy() * 255,
+                size=0.01
+            )
+            points = context[0, :, :3].cpu().numpy()
+            visualize_pointcloud(
+                vis, 'compressed_pcd',
+                pc=points,
+                color=np.array([255, 0, 0]),
+                size=0.02
+            )
+            # visible = np.concatenate([
+            #     visible_pcd[0,0].permute(1,2,0).reshape(-1, 3).cpu().numpy(),
+            #     visible_rgb[0,0].permute(1,2,0).reshape(-1, 3).cpu().numpy(),
+            # ], axis=1)
+            # np.save('visible_sim.npy', visible)
+            # np.save('fps_sim.npy', points)
+
+            import IPython; IPython.embed()
 
 
         # Encode instruction (B, 53, F)
