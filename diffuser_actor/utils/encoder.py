@@ -21,7 +21,9 @@ class Encoder(nn.Module):
                  nhist=3,
                  num_attn_heads=8,
                  num_vis_ins_attn_layers=2,
-                 fps_subsampling_factor=5):
+                 fps_subsampling_factor=5,
+                 high_res_features=False
+                 ):
         super().__init__()
         assert backbone in ["resnet50", "resnet18", "clip"]
         assert image_size in [(128, 128), (256, 256)]
@@ -30,6 +32,7 @@ class Encoder(nn.Module):
         self.image_size = image_size
         self.num_sampling_level = num_sampling_level
         self.fps_subsampling_factor = fps_subsampling_factor
+        self.high_res_features = high_res_features
 
         # Frozen backbone
         if backbone == "resnet50":
@@ -50,9 +53,11 @@ class Encoder(nn.Module):
             # at 1/4 resolution (32x32)
             # Fine RGB features are the 1st layer of the feature pyramid
             # at 1/2 resolution (64x64)
-            # self.feature_map_pyramid = ['res2', 'res1', 'res1', 'res1']
             # HACK: use higher resolution 32 (res1) -> 64 (res2)
-            self.feature_map_pyramid = ['res1', 'res2', 'res1', 'res1']
+            if self.high_res_features:
+                self.feature_map_pyramid = ['res1', 'res2', 'res1', 'res1']
+            else:
+                self.feature_map_pyramid = ['res2', 'res1', 'res1', 'res1']
             self.downscaling_factor_pyramid = [4, 2, 2, 2]
         elif self.image_size == (256, 256):
             # Coarse RGB features are the 3rd layer of the feature pyramid
