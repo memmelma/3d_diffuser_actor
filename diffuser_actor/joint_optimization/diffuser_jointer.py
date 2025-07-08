@@ -111,7 +111,8 @@ class DiffuserJointer(nn.Module):
                  relative=False,
                  traj_relative=False,
                  lang_enhanced=False,
-                 num_attn_heads=6):
+                 num_attn_heads=6,
+                 high_res_features=False):
         super().__init__()
         self._relative = relative
         self._traj_relative = traj_relative
@@ -127,7 +128,8 @@ class DiffuserJointer(nn.Module):
             num_sampling_level=1,
             nhist=nhist,
             num_vis_ins_attn_layers=num_vis_ins_attn_layers,
-            fps_subsampling_factor=fps_subsampling_factor
+            fps_subsampling_factor=fps_subsampling_factor,
+            high_res_features=high_res_features
         )
         self.prediction_head = DiffusionHead(
             num_attn_heads=num_attn_heads,
