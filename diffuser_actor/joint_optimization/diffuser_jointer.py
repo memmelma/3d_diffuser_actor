@@ -403,8 +403,8 @@ class DiffuserJointer(nn.Module):
 
         # Relative Trajectory as Action Representation: https://arxiv.org/pdf/2402.10329
         if self._traj_relative:
-            anchor = curr_gripper
-            gt_trajectory = gt_trajectory - anchor
+            anchor = curr_gripper[:,:-1, :7]
+            gt_trajectory[:, :7] = gt_trajectory[:, :7] - anchor
 
         # gt_trajectory is expected to be in the quaternion format
         if run_inference:
@@ -417,7 +417,7 @@ class DiffuserJointer(nn.Module):
             )
             # Relative Trajectory as Action Representation: https://arxiv.org/pdf/2402.10329
             if self._traj_relative:
-                traj = traj + anchor
+                traj[:, :, :7] = traj[:, :, :7] + anchor
             return traj
         
         # Normalize all pos
