@@ -172,7 +172,7 @@ class DiffuserJointer(nn.Module):
 
 
         if False:
-            from utils.meshcat import create_visualizer, visualize_pointcloud
+            from problem_reduction.points.meshcat import create_visualizer, visualize_pointcloud
             vis = create_visualizer()
             
             visualize_pointcloud(
