@@ -98,7 +98,7 @@ class DiffuserJointer(nn.Module):
                  image_size=(256, 256),
                  embedding_dim=60,
                  num_vis_ins_attn_layers=2,
-                 use_instruction=False,
+                 use_instruction=True,
                  fps_subsampling_factor=5,
                  gripper_loc_bounds=None,
                  joint_loc_bounds=None,
@@ -153,7 +153,9 @@ class DiffuserJointer(nn.Module):
         
         augmented_pcd = visible_pcd.clone()
         if augment_pcd:
-            augmented_pcd = augment_pointcloud_batch(augmented_pcd, translation_range=0.03, rotation_range=3, noise_range=0.0)
+            augmented_pcd = augment_pointcloud_batch(augmented_pcd, translation_range=0.02, rotation_range=2, noise_range=0.0)
+            # augmented_pcd = augment_pointcloud_batch(augmented_pcd, translation_range=0.05, rotation_range=5, noise_range=0.0)
+            # augmented_pcd = augment_pointcloud_batch(augmented_pcd, translation_range=0.03, rotation_range=3, noise_range=0.0)
 
         augmented_rgb = visible_rgb.clone()
         if augment_rgb:
@@ -403,8 +405,10 @@ class DiffuserJointer(nn.Module):
 
         # Relative Trajectory as Action Representation: https://arxiv.org/pdf/2402.10329
         if self._traj_relative:
-            anchor = curr_gripper[:,:-1, :7]
-            gt_trajectory[:, :7] = gt_trajectory[:, :7] - anchor
+            # current position becomes anchor
+            anchor = curr_gripper[:, -1:, :7]
+            # subtract anchor from all positions
+            gt_trajectory[:, :, :7] = gt_trajectory[:, :, :7] - anchor
 
         # gt_trajectory is expected to be in the quaternion format
         if run_inference:
@@ -418,6 +422,7 @@ class DiffuserJointer(nn.Module):
             # Relative Trajectory as Action Representation: https://arxiv.org/pdf/2402.10329
             if self._traj_relative:
                 traj[:, :, :7] = traj[:, :, :7] + anchor
+            
             return traj
         
         # Normalize all pos

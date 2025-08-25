@@ -3,7 +3,10 @@ import torch.nn as nn
 import torch.nn.functional as F
 import einops
 from diffusers.schedulers.scheduling_ddpm import DDPMScheduler
-
+from problem_reduction.threedda.model import (
+    augment_pointcloud_batch,
+    augment_rgb_sequence
+)
 from diffuser_actor.utils.layers import (
     FFWRelativeSelfAttentionModule,
     FFWRelativeCrossAttentionModule,
@@ -31,16 +34,21 @@ class DiffuserActor(nn.Module):
                  image_size=(256, 256),
                  embedding_dim=60,
                  num_vis_ins_attn_layers=2,
-                 use_instruction=False,
+                 use_instruction=True,
                  fps_subsampling_factor=5,
                  gripper_loc_bounds=None,
+                 augment_pcd=False,
+                 augment_rgb=False,
                  rotation_parametrization='6D',
                  quaternion_format='xyzw',
                  diffusion_timesteps=100,
                  nhist=3,
                  loss_weights=[30, 10, 1],
                  relative=False,
-                 lang_enhanced=False):
+                 lang_enhanced=False,
+                 num_attn_heads=6,
+                 high_res_features=False,
+        ):
         super().__init__()
         self._rotation_parametrization = rotation_parametrization
         self._quaternion_format = quaternion_format
@@ -49,13 +57,16 @@ class DiffuserActor(nn.Module):
         self.encoder = Encoder(
             backbone=backbone,
             image_size=image_size,
+            num_attn_heads=num_attn_heads,
             embedding_dim=embedding_dim,
             num_sampling_level=1,
             nhist=nhist,
             num_vis_ins_attn_layers=num_vis_ins_attn_layers,
-            fps_subsampling_factor=fps_subsampling_factor
+            fps_subsampling_factor=fps_subsampling_factor,
+            high_res_features=high_res_features
         )
         self.prediction_head = DiffusionHead(
+            num_attn_heads=num_attn_heads,
             embedding_dim=embedding_dim,
             use_instruction=use_instruction,
             rotation_parametrization=rotation_parametrization,
@@ -76,8 +87,23 @@ class DiffuserActor(nn.Module):
         self.gripper_loc_bounds = torch.tensor(gripper_loc_bounds)
         self.loss_weights = loss_weights
 
+        self.augment_pcd = augment_pcd
+        self.augment_rgb = augment_rgb
+
     def encode_inputs(self, visible_rgb, visible_pcd, instruction,
-                      curr_gripper):
+                      curr_gripper, augment_pcd=True, augment_rgb=True):
+        
+    
+        augmented_pcd = visible_pcd.clone()
+        if augment_pcd:
+            augmented_pcd = augment_pointcloud_batch(augmented_pcd, translation_range=0.02, rotation_range=2, noise_range=0.0)
+            # augmented_pcd = augment_pointcloud_batch(augmented_pcd, translation_range=0.05, rotation_range=5, noise_range=0.0)
+            # augmented_pcd = augment_pointcloud_batch(augmented_pcd, translation_range=0.03, rotation_range=3, noise_range=0.0)
+
+        augmented_rgb = visible_rgb.clone()
+        if augment_rgb:
+            augmented_rgb = augment_rgb_sequence(augmented_rgb, brightness=0.3, contrast=0.3, color_jitter=0.2)
+
         # Compute visual features/positional embeddings at different scales
         rgb_feats_pyramid, pcd_pyramid = self.encoder.encode_images(
             visible_rgb, visible_pcd
@@ -205,7 +231,7 @@ class DiffuserActor(nn.Module):
 
         # Prepare inputs
         fixed_inputs = self.encode_inputs(
-            rgb_obs, pcd_obs, instruction, curr_gripper
+            rgb_obs, pcd_obs, instruction, curr_gripper, augment_pcd=False, augment_rgb=False
         )
 
         # Condition on start-end pose
@@ -370,7 +396,7 @@ class DiffuserActor(nn.Module):
 
         # Prepare inputs
         fixed_inputs = self.encode_inputs(
-            rgb_obs, pcd_obs, instruction, curr_gripper
+            rgb_obs, pcd_obs, instruction, curr_gripper, augment_pcd=self.augment_pcd, augment_rgb=self.augment_rgb
         )
 
         # Condition on start-end pose
